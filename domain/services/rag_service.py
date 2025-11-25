@@ -134,29 +134,3 @@ Resposta:"""
             self.logger.log_error("RAGSimpleQueryError", str(e), f"Question: {question[:50]}...")
             return f"Erro ao processar pergunta: {str(e)}"
     
-            processing_time = time.time() - start_time
-            self.logger.log_error("RAGSimpleQueryError", str(e), f"Question: {question[:100]}...")
-            raise
-    
-    def _create_citations_from_sources(self, source_documents: List) -> List:
-        citations = []
-        for doc in source_documents:
-            citation = self.citation_service.create_citation(
-                source_document=doc,
-                chunk_content=doc.page_content[:200] + "..."
-            )
-            citations.append(citation)
-        return citations
-    
-    def _log_query_with_citations(self, question: str, result: Dict, citations: List, processing_time: float):
-        citation_summary = self.citation_service.get_citation_summary(citations)
-        
-        self.logger.log_query_execution(
-            question=question,
-            method="rag_with_citations",
-            response_len=len(result["answer"]),
-            time_ms=processing_time,
-            chunks=len(citations)
-        )
-        
-        self.logger.logger.info(f"[CITATIONS] {citation_summary}")
