@@ -48,9 +48,17 @@ def create_routes(rag_service, llm_service, evaluation_service):
             return jsonify({"error": "Campo 'question' obrigatório"}), 400
         
         try:
-            result = rag_service.answer_question(question)
-            result["question"] = question
-            result["method"] = "RAG_with_citations"
+            start_time = time.time()
+            
+            answer = rag_service.answer_question(question)
+            processing_time = time.time() - start_time
+            
+            result = {
+                "question": question,
+                "answer": answer,  # string da resposta
+                "method": "RAG_with_citations",
+                "processing_time": round(processing_time, 3)
+            }
             
             return jsonify(result)
             
