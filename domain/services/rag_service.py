@@ -134,3 +134,11 @@ Resposta:"""
             self.logger.log_error("RAGSimpleQueryError", str(e), f"Question: {question[:50]}...")
             return f"Erro ao processar pergunta: {str(e)}"
     
+        # Alias para compatibilidade
+    def query(self, question: str) -> str:
+        """Alias para answer_question"""
+        return self.answer_question(question)
+    
+    def query_simple(self, question: str) -> str:
+        """Alias para answer_question_simple"""
+        return self.answer_question_simple(question)

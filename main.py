@@ -29,6 +29,11 @@ vectorstore = faiss_repo.load_or_create_index()
 # Domain Services
 llm = OpenAI(openai_api_key=openai_api_key)
 rag_service = RAGService(llm, vectorstore.as_retriever())
+# compatibilidade: alguns controladores/versões esperam métodos .query / .query_simple
+# mapeia para os métodos existentes (answer_question / answer_question_simple)
+setattr(rag_service, "query", getattr(rag_service, "answer_question", None))
+setattr(rag_service, "query_simple", getattr(rag_service, "answer_question_simple", None))
+
 llm_service = LLMService(llm)
 evaluation_service = RAGEvaluationService(openai_api_key=openai_api_key)
 
