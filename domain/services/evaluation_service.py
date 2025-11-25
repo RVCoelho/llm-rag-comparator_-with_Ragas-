@@ -128,15 +128,24 @@ class RAGEvaluationService:
         """Coleta dados RAG (resposta + contexts)"""
         try:
             # Usar método simples para não ter citações
-            answer = rag_service.answer_question_simple(question)
+            raw_answer = rag_service.answer_question_simple(question)
+            answer = self._extract_text_from_response(raw_answer)
             
             # Extrair contexts usando retriever
             contexts = []
             if hasattr(rag_service, 'retriever'):
-                docs = rag_service.retriever.get_relevant_documents(question)
+                try:
+                    # Tentar método novo (invoke)
+                    docs = rag_service.retriever.invoke(question)
+                except AttributeError:
+                    # Fallback para método antigo
+                    docs = rag_service.retriever.get_relevant_documents(question)
                 contexts = [doc.page_content for doc in docs]
             elif hasattr(rag_service, 'qa_chain') and hasattr(rag_service.qa_chain, 'retriever'):
-                docs = rag_service.qa_chain.retriever.get_relevant_documents(question)
+                try:
+                    docs = rag_service.qa_chain.retriever.invoke(question)
+                except AttributeError:
+                    docs = rag_service.qa_chain.retriever.get_relevant_documents(question)
                 contexts = [doc.page_content for doc in docs]
             
             return {
