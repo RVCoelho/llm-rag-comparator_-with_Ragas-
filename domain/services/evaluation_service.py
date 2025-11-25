@@ -46,6 +46,19 @@ class RAGEvaluationService:
             'context_precision': context_precision
         }
     
+    def _extract_text_from_response(self, response: Any) -> str:
+        """Extrai texto de diferentes tipos de resposta (AIMessage, dict, str)"""
+        if isinstance(response, str):
+            return response
+        elif hasattr(response, 'content'):
+            return response.content
+        elif isinstance(response, dict) and 'answer' in response:
+            return response['answer']
+        elif isinstance(response, dict) and 'content' in response:
+            return response['content']
+        else:
+            return str(response)
+    
     def evaluate_single_question(self, question: str, rag_service, llm_service) -> Dict[str, Any]:
         """
         Avalia uma única pergunta e retorna resultado JSON
@@ -67,7 +80,8 @@ class RAGEvaluationService:
             rag_data = self._get_rag_data(rag_service, question)
             
             # 2. Coletar resposta LLM
-            llm_answer = llm_service.answer_question(question)
+            llm_response = llm_service.answer_question(question)
+            llm_answer = self._extract_text_from_response(llm_response)
             
             # 3. Avaliar RAG com RAGAS
             rag_scores = self._evaluate_rag_response(question, rag_data)
@@ -85,10 +99,12 @@ class RAGEvaluationService:
                     "question_length": len(question)
                 },
                 "rag_evaluation": {
+                    # "contexts": rag_data['contexts'],
                     "scores": rag_scores,
                     "interpretation": self._interpret_rag_scores(rag_scores)
                 },
                 "llm_evaluation": {
+                    "answer": llm_answer,
                     "scores": llm_scores,
                     "interpretation": self._interpret_llm_scores(llm_scores)
                 },
