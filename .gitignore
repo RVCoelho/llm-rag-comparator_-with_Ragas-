@@ -211,3 +211,6 @@ pdf_faiss_index/
 
 # rag logs
 rag_fii.log
+
+# RAG assets
+assets/
