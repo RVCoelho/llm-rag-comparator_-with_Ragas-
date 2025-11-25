@@ -160,26 +160,117 @@ class RAGEvaluationService:
     def _evaluate_rag_response(self, question: str, rag_data: Dict) -> Dict[str, float]:
         """Avalia resposta RAG usando RAGAS"""
         try:
-            # Preparar dataset
-            dataset_dict = {
-                'question': [question],
-                'answer': [rag_data['answer']],
-                'contexts': [rag_data['contexts']],
-                'ground_truth': ['']  # Vazio - sem ground truth
-            }
+            # Validar dados antes de avaliar
+            answer = rag_data.get('answer', '').strip()
+            contexts = rag_data.get('contexts', [])
             
-            dataset = Dataset.from_dict(dataset_dict)
+            # Verificar se resposta e contextos não estão vazios
+            if not answer or len(answer) < 10:
+                self.logger.logger.warning(f"[RAGAS] Resposta RAG muito curta ou vazia: '{answer}'")
+                return {metric: 0.0 for metric in self.metrics.keys()}
             
-            # Executar avaliação
-            result = evaluate(dataset, metrics=list(self.metrics.values()))
+            if not contexts or len(contexts) == 0:
+                self.logger.logger.warning(f"[RAGAS] Nenhum contexto encontrado para RAG")
+                return {metric: 0.0 for metric in self.metrics.keys()}
             
-            # Extrair scores
+            # Limpar contextos vazios
+            contexts = [ctx.strip() for ctx in contexts if ctx and len(ctx.strip()) > 10]
+            
+            if not contexts:
+                self.logger.logger.warning(f"[RAGAS] Contextos inválidos após limpeza")
+                return {metric: 0.0 for metric in self.metrics.keys()}
+            
+            self.logger.logger.info(f"[RAGAS] Avaliando RAG - Q:{len(question)}chars A:{len(answer)}chars C:{len(contexts)}docs")
+            
+            # NOVA ABORDAGEM: Avaliar cada métrica separadamente
             scores = {}
-            if hasattr(result, 'to_pandas'):
-                df = result.to_pandas()
-                for metric_name in self.metrics.keys():
-                    if metric_name in df.columns:
-                        scores[metric_name] = float(df[metric_name].iloc[0])
+            
+            # 1. Answer Relevancy
+            try:
+                dataset_relevancy = Dataset.from_dict({
+                    'question': [question.strip()],
+                    'answer': [answer],
+                    'contexts': [contexts],
+                })
+                
+                result = evaluate(dataset_relevancy, metrics=[self.metrics['answer_relevancy']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'answer_relevancy' in df.columns:
+                        score_value = df['answer_relevancy'].iloc[0]
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            scores['answer_relevancy'] = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ answer_relevancy = {scores['answer_relevancy']:.3f}")
+                        else:
+                            scores['answer_relevancy'] = 0.0
+                            self.logger.logger.warning(f"[RAGAS] ✗ answer_relevancy = NaN/invalid")
+                    else:
+                        scores['answer_relevancy'] = 0.0
+                        self.logger.logger.warning(f"[RAGAS] ✗ answer_relevancy não encontrado no resultado")
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro em answer_relevancy: {str(e)}")
+                scores['answer_relevancy'] = 0.0
+            
+            # 2. Faithfulness
+            try:
+                dataset_faith = Dataset.from_dict({
+                    'question': [question.strip()],
+                    'answer': [answer],
+                    'contexts': [contexts],
+                })
+                
+                result = evaluate(dataset_faith, metrics=[self.metrics['faithfulness']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'faithfulness' in df.columns:
+                        score_value = df['faithfulness'].iloc[0]
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            scores['faithfulness'] = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ faithfulness = {scores['faithfulness']:.3f}")
+                        else:
+                            scores['faithfulness'] = 0.0
+                            self.logger.logger.warning(f"[RAGAS] ✗ faithfulness = NaN/invalid")
+                    else:
+                        scores['faithfulness'] = 0.0
+                        self.logger.logger.warning(f"[RAGAS] ✗ faithfulness não encontrado")
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro em faithfulness: {str(e)}")
+                scores['faithfulness'] = 0.0
+            
+            # 3. Context Precision
+            try:
+                dataset_precision = Dataset.from_dict({
+                    'question': [question.strip()],
+                    'answer': [answer],
+                    'contexts': [contexts],
+                    'ground_truth': [answer]  # Usar a própria resposta como ground truth
+                })
+                
+                result = evaluate(dataset_precision, metrics=[self.metrics['context_precision']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'context_precision' in df.columns:
+                        score_value = df['context_precision'].iloc[0]
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            scores['context_precision'] = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ context_precision = {scores['context_precision']:.3f}")
+                        else:
+                            scores['context_precision'] = 0.0
+                            self.logger.logger.warning(f"[RAGAS] ✗ context_precision = NaN/invalid")
+                    else:
+                        scores['context_precision'] = 0.0
+                        self.logger.logger.warning(f"[RAGAS] ✗ context_precision não encontrado")
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro em context_precision: {str(e)}")
+                scores['context_precision'] = 0.0
+            
+            # Garantir que todas as métricas existam
+            for metric in self.metrics.keys():
+                if metric not in scores:
+                    scores[metric] = 0.0
             
             return scores
             
