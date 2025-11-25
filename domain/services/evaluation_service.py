@@ -46,6 +46,19 @@ class RAGEvaluationService:
             'context_precision': context_precision
         }
     
+    def _extract_text_from_response(self, response: Any) -> str:
+        """Extrai texto de diferentes tipos de resposta (AIMessage, dict, str)"""
+        if isinstance(response, str):
+            return response
+        elif hasattr(response, 'content'):
+            return response.content
+        elif isinstance(response, dict) and 'answer' in response:
+            return response['answer']
+        elif isinstance(response, dict) and 'content' in response:
+            return response['content']
+        else:
+            return str(response)
+    
     def evaluate_single_question(self, question: str, rag_service, llm_service) -> Dict[str, Any]:
         """
         Avalia uma única pergunta e retorna resultado JSON
@@ -67,7 +80,8 @@ class RAGEvaluationService:
             rag_data = self._get_rag_data(rag_service, question)
             
             # 2. Coletar resposta LLM
-            llm_answer = llm_service.answer_question(question)
+            llm_response = llm_service.answer_question(question)
+            llm_answer = self._extract_text_from_response(llm_response)
             
             # 3. Avaliar RAG com RAGAS
             rag_scores = self._evaluate_rag_response(question, rag_data)
@@ -85,10 +99,12 @@ class RAGEvaluationService:
                     "question_length": len(question)
                 },
                 "rag_evaluation": {
+                    # "contexts": rag_data['contexts'],
                     "scores": rag_scores,
                     "interpretation": self._interpret_rag_scores(rag_scores)
                 },
                 "llm_evaluation": {
+                    "answer": llm_answer,
                     "scores": llm_scores,
                     "interpretation": self._interpret_llm_scores(llm_scores)
                 },
@@ -112,15 +128,24 @@ class RAGEvaluationService:
         """Coleta dados RAG (resposta + contexts)"""
         try:
             # Usar método simples para não ter citações
-            answer = rag_service.answer_question_simple(question)
+            raw_answer = rag_service.answer_question_simple(question)
+            answer = self._extract_text_from_response(raw_answer)
             
             # Extrair contexts usando retriever
             contexts = []
             if hasattr(rag_service, 'retriever'):
-                docs = rag_service.retriever.get_relevant_documents(question)
+                try:
+                    # Tentar método novo (invoke)
+                    docs = rag_service.retriever.invoke(question)
+                except AttributeError:
+                    # Fallback para método antigo
+                    docs = rag_service.retriever.get_relevant_documents(question)
                 contexts = [doc.page_content for doc in docs]
             elif hasattr(rag_service, 'qa_chain') and hasattr(rag_service.qa_chain, 'retriever'):
-                docs = rag_service.qa_chain.retriever.get_relevant_documents(question)
+                try:
+                    docs = rag_service.qa_chain.retriever.invoke(question)
+                except AttributeError:
+                    docs = rag_service.qa_chain.retriever.get_relevant_documents(question)
                 contexts = [doc.page_content for doc in docs]
             
             return {
@@ -135,26 +160,117 @@ class RAGEvaluationService:
     def _evaluate_rag_response(self, question: str, rag_data: Dict) -> Dict[str, float]:
         """Avalia resposta RAG usando RAGAS"""
         try:
-            # Preparar dataset
-            dataset_dict = {
-                'question': [question],
-                'answer': [rag_data['answer']],
-                'contexts': [rag_data['contexts']],
-                'ground_truth': ['']  # Vazio - sem ground truth
-            }
+            # Validar dados antes de avaliar
+            answer = rag_data.get('answer', '').strip()
+            contexts = rag_data.get('contexts', [])
             
-            dataset = Dataset.from_dict(dataset_dict)
+            # Verificar se resposta e contextos não estão vazios
+            if not answer or len(answer) < 10:
+                self.logger.logger.warning(f"[RAGAS] Resposta RAG muito curta ou vazia: '{answer}'")
+                return {metric: 0.0 for metric in self.metrics.keys()}
             
-            # Executar avaliação
-            result = evaluate(dataset, metrics=list(self.metrics.values()))
+            if not contexts or len(contexts) == 0:
+                self.logger.logger.warning(f"[RAGAS] Nenhum contexto encontrado para RAG")
+                return {metric: 0.0 for metric in self.metrics.keys()}
             
-            # Extrair scores
+            # Limpar contextos vazios
+            contexts = [ctx.strip() for ctx in contexts if ctx and len(ctx.strip()) > 10]
+            
+            if not contexts:
+                self.logger.logger.warning(f"[RAGAS] Contextos inválidos após limpeza")
+                return {metric: 0.0 for metric in self.metrics.keys()}
+            
+            self.logger.logger.info(f"[RAGAS] Avaliando RAG - Q:{len(question)}chars A:{len(answer)}chars C:{len(contexts)}docs")
+            
+            # NOVA ABORDAGEM: Avaliar cada métrica separadamente
             scores = {}
-            if hasattr(result, 'to_pandas'):
-                df = result.to_pandas()
-                for metric_name in self.metrics.keys():
-                    if metric_name in df.columns:
-                        scores[metric_name] = float(df[metric_name].iloc[0])
+            
+            # 1. Answer Relevancy
+            try:
+                dataset_relevancy = Dataset.from_dict({
+                    'question': [question.strip()],
+                    'answer': [answer],
+                    'contexts': [contexts],
+                })
+                
+                result = evaluate(dataset_relevancy, metrics=[self.metrics['answer_relevancy']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'answer_relevancy' in df.columns:
+                        score_value = df['answer_relevancy'].iloc[0]
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            scores['answer_relevancy'] = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ answer_relevancy = {scores['answer_relevancy']:.3f}")
+                        else:
+                            scores['answer_relevancy'] = 0.0
+                            self.logger.logger.warning(f"[RAGAS] ✗ answer_relevancy = NaN/invalid")
+                    else:
+                        scores['answer_relevancy'] = 0.0
+                        self.logger.logger.warning(f"[RAGAS] ✗ answer_relevancy não encontrado no resultado")
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro em answer_relevancy: {str(e)}")
+                scores['answer_relevancy'] = 0.0
+            
+            # 2. Faithfulness
+            try:
+                dataset_faith = Dataset.from_dict({
+                    'question': [question.strip()],
+                    'answer': [answer],
+                    'contexts': [contexts],
+                })
+                
+                result = evaluate(dataset_faith, metrics=[self.metrics['faithfulness']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'faithfulness' in df.columns:
+                        score_value = df['faithfulness'].iloc[0]
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            scores['faithfulness'] = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ faithfulness = {scores['faithfulness']:.3f}")
+                        else:
+                            scores['faithfulness'] = 0.0
+                            self.logger.logger.warning(f"[RAGAS] ✗ faithfulness = NaN/invalid")
+                    else:
+                        scores['faithfulness'] = 0.0
+                        self.logger.logger.warning(f"[RAGAS] ✗ faithfulness não encontrado")
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro em faithfulness: {str(e)}")
+                scores['faithfulness'] = 0.0
+            
+            # 3. Context Precision
+            try:
+                dataset_precision = Dataset.from_dict({
+                    'question': [question.strip()],
+                    'answer': [answer],
+                    'contexts': [contexts],
+                    'ground_truth': [answer]  # Usar a própria resposta como ground truth
+                })
+                
+                result = evaluate(dataset_precision, metrics=[self.metrics['context_precision']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'context_precision' in df.columns:
+                        score_value = df['context_precision'].iloc[0]
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            scores['context_precision'] = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ context_precision = {scores['context_precision']:.3f}")
+                        else:
+                            scores['context_precision'] = 0.0
+                            self.logger.logger.warning(f"[RAGAS] ✗ context_precision = NaN/invalid")
+                    else:
+                        scores['context_precision'] = 0.0
+                        self.logger.logger.warning(f"[RAGAS] ✗ context_precision não encontrado")
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro em context_precision: {str(e)}")
+                scores['context_precision'] = 0.0
+            
+            # Garantir que todas as métricas existam
+            for metric in self.metrics.keys():
+                if metric not in scores:
+                    scores[metric] = 0.0
             
             return scores
             
@@ -165,27 +281,47 @@ class RAGEvaluationService:
     def _evaluate_llm_response(self, question: str, llm_answer: str) -> Dict[str, float]:
         """Avalia resposta LLM (apenas answer_relevancy)"""
         try:
-            # Preparar dataset
+            # Validar resposta
+            answer = llm_answer.strip()
+            
+            if not answer or len(answer) < 10:
+                self.logger.logger.warning(f"[RAGAS] Resposta LLM muito curta ou vazia")
+                return {'answer_relevancy': 0.0}
+            
+            self.logger.logger.info(f"[RAGAS] Avaliando LLM - Q:{len(question)}chars A:{len(answer)}chars")
+            
+            # Preparar dataset (SEM contexts para LLM)
             dataset_dict = {
-                'question': [question],
-                'answer': [llm_answer],
-                'contexts': [[]],  # Vazio para LLM
-                'ground_truth': ['']  # Vazio - sem ground truth
+                'question': [question.strip()],
+                'answer': [answer],
             }
             
             dataset = Dataset.from_dict(dataset_dict)
             
             # Avaliar apenas answer_relevancy
-            result = evaluate(dataset, metrics=[self.metrics['answer_relevancy']])
+            try:
+                result = evaluate(dataset, metrics=[self.metrics['answer_relevancy']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'answer_relevancy' in df.columns:
+                        score_value = df['answer_relevancy'].iloc[0]
+                        
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            score = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ LLM answer_relevancy = {score:.3f}")
+                            return {'answer_relevancy': score}
+                        else:
+                            self.logger.logger.warning(f"[RAGAS] ✗ LLM answer_relevancy = NaN/invalid")
+                            return {'answer_relevancy': 0.0}
+                    else:
+                        self.logger.logger.warning(f"[RAGAS] ✗ LLM answer_relevancy não encontrado")
+                        return {'answer_relevancy': 0.0}
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro ao avaliar LLM: {str(e)}")
+                return {'answer_relevancy': 0.0}
             
-            # Extrair score
-            score = 0.0
-            if hasattr(result, 'to_pandas'):
-                df = result.to_pandas()
-                if 'answer_relevancy' in df.columns:
-                    score = float(df['answer_relevancy'].iloc[0])
-            
-            return {'answer_relevancy': score}
+            return {'answer_relevancy': 0.0}
             
         except Exception as e:
             self.logger.log_error("LLMEvaluationError", str(e))
