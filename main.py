@@ -1,5 +1,6 @@
 import os
 from flask import Flask
+from flask_cors import CORS
 from dotenv import load_dotenv
 from langchain_community.llms import OpenAI
 
@@ -19,6 +20,7 @@ FAISS_PATH = "pdf_faiss_index"
 
 # App
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": ["http://localhost:8080", "http://127.0.0.1:8080"]}}, supports_credentials=True)
 
 # Infra
 faiss_repo = FaissRepository(FAISS_PATH, PDFS_DIR, openai_api_key)
