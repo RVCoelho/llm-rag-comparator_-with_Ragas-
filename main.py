@@ -2,7 +2,7 @@ import os
 from flask import Flask
 from flask_cors import CORS
 from dotenv import load_dotenv
-from langchain_community.llms import OpenAI
+from langchain_openai import OpenAI
 
 from data.repositories.local.faiss_repository import FaissRepository
 from domain.services.rag_service import RAGService
