@@ -6,7 +6,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
-from langchain.schema import Document
+from langchain_core.documents import Document
 from domain.services.logging_service import RAGLogger
 
 class FaissRepository:
@@ -36,8 +36,8 @@ class FaissRepository:
         
         self.logger.log_pdf_discovery(pdf_files)
         
-        docs = self._process_pdf_files_with_metadata(pdf_files)
-        split_docs = self._split_documents_with_metadata(docs)
+        docs = self._process_pdf_files(pdf_files)
+        split_docs = self._split_documents(docs)
         vectorstore = self._create_vectorstore(split_docs)
         
         total_time = time.time() - start_time
@@ -45,7 +45,7 @@ class FaissRepository:
         
         return vectorstore
     
-    def _process_pdf_files_with_metadata(self, pdf_files: List[str]) -> List[Document]:
+    def _process_pdf_files(self, pdf_files: List[str]) -> List[Document]:
         all_docs = []
         successful = 0
         
@@ -75,6 +75,7 @@ class FaissRepository:
     
     def _enrich_document_metadata(self, docs: List[Document], pdf_file: str) -> List[Document]:
         filename = os.path.basename(pdf_file)
+        
         enriched_docs = []
         
         for doc in docs:
@@ -93,7 +94,7 @@ class FaissRepository:
         
         return enriched_docs
     
-    def _split_documents_with_metadata(self, docs: List[Document]) -> List[Document]:
+    def _split_documents(self, docs: List[Document]) -> List[Document]:
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         split_docs = splitter.split_documents(docs)
         
