@@ -281,27 +281,47 @@ class RAGEvaluationService:
     def _evaluate_llm_response(self, question: str, llm_answer: str) -> Dict[str, float]:
         """Avalia resposta LLM (apenas answer_relevancy)"""
         try:
-            # Preparar dataset
+            # Validar resposta
+            answer = llm_answer.strip()
+            
+            if not answer or len(answer) < 10:
+                self.logger.logger.warning(f"[RAGAS] Resposta LLM muito curta ou vazia")
+                return {'answer_relevancy': 0.0}
+            
+            self.logger.logger.info(f"[RAGAS] Avaliando LLM - Q:{len(question)}chars A:{len(answer)}chars")
+            
+            # Preparar dataset (SEM contexts para LLM)
             dataset_dict = {
-                'question': [question],
-                'answer': [llm_answer],
-                'contexts': [[]],  # Vazio para LLM
-                'ground_truth': ['']  # Vazio - sem ground truth
+                'question': [question.strip()],
+                'answer': [answer],
             }
             
             dataset = Dataset.from_dict(dataset_dict)
             
             # Avaliar apenas answer_relevancy
-            result = evaluate(dataset, metrics=[self.metrics['answer_relevancy']])
+            try:
+                result = evaluate(dataset, metrics=[self.metrics['answer_relevancy']])
+                
+                if hasattr(result, 'to_pandas'):
+                    df = result.to_pandas()
+                    if 'answer_relevancy' in df.columns:
+                        score_value = df['answer_relevancy'].iloc[0]
+                        
+                        if score_value is not None and score_value == score_value and score_value >= 0:
+                            score = float(score_value)
+                            self.logger.logger.info(f"[RAGAS] ✓ LLM answer_relevancy = {score:.3f}")
+                            return {'answer_relevancy': score}
+                        else:
+                            self.logger.logger.warning(f"[RAGAS] ✗ LLM answer_relevancy = NaN/invalid")
+                            return {'answer_relevancy': 0.0}
+                    else:
+                        self.logger.logger.warning(f"[RAGAS] ✗ LLM answer_relevancy não encontrado")
+                        return {'answer_relevancy': 0.0}
+            except Exception as e:
+                self.logger.logger.error(f"[RAGAS] Erro ao avaliar LLM: {str(e)}")
+                return {'answer_relevancy': 0.0}
             
-            # Extrair score
-            score = 0.0
-            if hasattr(result, 'to_pandas'):
-                df = result.to_pandas()
-                if 'answer_relevancy' in df.columns:
-                    score = float(df['answer_relevancy'].iloc[0])
-            
-            return {'answer_relevancy': score}
+            return {'answer_relevancy': 0.0}
             
         except Exception as e:
             self.logger.log_error("LLMEvaluationError", str(e))
